@@ -1,0 +1,71 @@
+name: Build unsigned iPhone IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    name: Compile and package IPA
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Validate Swift sources and project
+        run: |
+          set -euo pipefail
+          plutil -lint SimplyKeys.xcodeproj/project.pbxproj
+          while IFS= read -r -d '' source; do
+            swiftc -frontend -parse "$source"
+          done < <(find SimplyKeys -name '*.swift' -print0)
+
+      - name: Test instrument analysis and sample banks
+        run: |
+          set -euo pipefail
+          swiftc -O -o /tmp/mypiano-audio-test Tests/AudioStubs.swift SimplyKeys/InstrumentAnalysis.swift Tests/main.swift
+          /tmp/mypiano-audio-test
+          swiftc -O -o /tmp/mypiano-trim-test SimplyKeys/SampleTrimming.swift Tests/TrimTests.swift
+          /tmp/mypiano-trim-test
+          swiftc -O -o /tmp/mypiano-video-test \
+            SimplyKeys/Music.swift SimplyKeys/InstrumentAnalysis.swift \
+            SimplyKeys/SampleTools.swift SimplyKeys/MediaSampleImporter.swift \
+            Tests/VideoImportTests.swift
+          /tmp/mypiano-video-test Tests/Fixtures
+
+      - name: Build for iPhone
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project SimplyKeys.xcodeproj \
+            -scheme SimplyKeys \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          test -d build/Build/Products/Release-iphoneos/SimplyKeys.app
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/SimplyKeys.app Payload/
+          /usr/bin/zip -qry SimplyKeys-unsigned.ipa Payload
+          test -s SimplyKeys-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimplyKeys-unsigned-IPA
+          path: SimplyKeys-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
